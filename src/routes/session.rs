@@ -9,15 +9,57 @@ use uuid::Uuid;
 
 use crate::{errors::Error, youtube};
 
+#[derive(Debug)]
+struct SessionData {
+    songs: Vec<youtube::SongDetails>,
+    users: u32,
+}
+
+impl SessionData {
+    fn new() -> Self {
+        Self {
+            songs: vec![],
+            users: 0,
+        }
+    }
+
+    fn as_vec(&self) -> Vec<(String, String)> {
+        vec![
+            ("songs".to_string(), serde_json::to_string(&self.songs).unwrap()),
+            ("users".to_string(), self.users.to_string()),
+        ]
+    }
+
+    fn from_vec(v: Vec<(String, String)>) -> Self {
+        let mut songs = vec![];
+        let mut users = 0;
+
+        for (key, value) in v {
+            match key.as_str() {
+                "songs" => {
+                    songs = serde_json::from_str(&value).unwrap();
+                }
+                "users" => {
+                    users = value.parse().unwrap();
+                }
+                _ => (),
+            }
+        }
+
+        Self { songs, users }
+    }
+}
+
 #[handler]
 async fn create_session(redis: Data<&ConnectionManager>) -> String {
     let mut redis = redis.clone();
 
     let id = Uuid::new_v4().to_string();
     let key = format!("session:{id}");
-    let _: () = redis.hset_multiple(key, &[
-        ("songs", "[]")
-    ]).await.unwrap();
+
+    let data = SessionData::new();
+    let data = data.as_vec();
+    let _: () = redis.hset_multiple(key, &data).await.unwrap();
 
     json!({ "id": id }).to_string()
 }
@@ -49,6 +91,66 @@ struct Packet {
     data: String,
 }
 
+impl Packet {
+    fn serialized<T: Serialize>(kind: PacketKind, data: T) -> String {
+        serde_json::to_string(&Packet {
+            kind,
+            data: serde_json::to_string(&data).unwrap(),
+        }).unwrap()
+    }
+}
+
+async fn get_session_data(id: &str, redis: &mut ConnectionManager) -> Result<SessionData, Error> {
+    let key = format!("session:{id}");
+    let vec: Vec<(String, String)> = redis.hgetall(&key).await.unwrap();
+    if vec.is_empty() {
+        return Err(Error::InvalidSession);
+    }
+    Ok(SessionData::from_vec(vec))
+}
+
+async fn get_songs(id: &str, redis: &mut ConnectionManager) -> Vec<youtube::SongDetails> {
+    let key = format!("session:{id}");
+    let songs: String = redis.hget(&key, "songs".to_string()).await.unwrap();
+    serde_json::from_str(&songs).unwrap()
+}
+
+async fn receive_packet(
+    packet: Packet,
+    redis: &mut ConnectionManager,
+    sender: &Sender<SinkData>,
+    session: &str,
+) -> bool {
+    let key = format!("session:{session}");
+
+    match packet.kind {
+        PacketKind::AddSong => {
+            let details = youtube::get_song_details(packet.data).await.unwrap();
+            let mut songs = get_songs(&session, redis).await;
+
+            if (songs.iter().find(|&s| s.title == details.title)).is_some() {
+                return false;
+            }
+
+            songs.push(details);
+            let songs_serialized = serde_json::to_string(&songs).unwrap();
+            let _: () = redis.hset(&key, "songs".to_string(), &songs_serialized).await.unwrap();
+
+            let send_packet = Packet {
+                kind: PacketKind::SetSongs,
+                data: songs_serialized,
+            };
+
+            if sender.send(SinkData::new(session, serde_json::to_string(&send_packet).unwrap())).is_err() {
+                return true;
+            }
+        }
+        _ => ()
+    }
+
+    false
+}
+
 #[handler]
 async fn join_session(
     redis: Data<&ConnectionManager>,
@@ -58,12 +160,12 @@ async fn join_session(
 ) -> Result<impl IntoResponse, Error> {
     let mut redis = redis.clone();
 
-    // check if session exists
     let key = format!("session:{session}");
-    let exists: bool = redis.exists(&key).await.unwrap();
-    if !exists {
-        return Err(Error::InvalidSession);
-    }
+
+    // check if session exists
+    let mut data = get_session_data(&session, &mut redis).await?;
+    data.users += 1;
+    let _: () = redis.hset_multiple(&key, &data.as_vec()).await.unwrap();
 
     // handle websocket
     let sender = sender.clone();
@@ -74,12 +176,8 @@ async fn join_session(
         debug!("Client connected to session {session}");
         
         // send current songs
-        let songs: String = redis.hget(&key, "songs".to_string()).await.unwrap();
-        let send_packet = Packet {
-            kind: PacketKind::SetSongs,
-            data: songs,
-        };
-        if sink.send(Message::Text(serde_json::to_string(&send_packet).unwrap())).await.is_err() {
+        let packet = Packet::serialized(PacketKind::SetSongs, data.songs);
+        if sink.send(Message::Text(packet)).await.is_err() {
             return;
         }
 
@@ -88,30 +186,22 @@ async fn join_session(
             while let Some(Ok(msg)) = stream.next().await {
                 match msg {
                     Message::Text(text) => {
-                        debug!("Received message: {text}");
-
                         let packet = serde_json::from_str::<Packet>(&text).unwrap();
-                        debug!("Packet: {:?}", packet);
+                        if receive_packet(packet, &mut redis, &sender, &recv_session).await {
+                            break;
+                        }
+                    }
+                    Message::Close(_) => {
+                        let mut data = get_session_data(&recv_session, &mut redis).await.unwrap();
 
-                        match packet.kind {
-                            PacketKind::AddSong => {
-                                let details = youtube::get_song_details(packet.data).await.unwrap();
-                                let songs: String = redis.hget(&key, "songs".to_string()).await.unwrap();
-                                let mut songs: Vec<youtube::SongDetails> = serde_json::from_str(&songs).unwrap();
-                                songs.push(details);
-                                let songs_serialized = serde_json::to_string(&songs).unwrap();
-                                let _: () = redis.hset(&key, "songs".to_string(), &songs_serialized).await.unwrap();
+                        data.users -= 1;
+                        debug!("Client disconnected from session {recv_session} | {} users left", data.users);
 
-                                let send_packet = Packet {
-                                    kind: PacketKind::SetSongs,
-                                    data: songs_serialized,
-                                };
-
-                                if sender.send(SinkData::new(&recv_session, serde_json::to_string(&send_packet).unwrap())).is_err() {
-                                    break;
-                                }
-                            }
-                            _ => ()
+                        if data.users > 0 {
+                            let _: () = redis.hset_multiple(&key, &data.as_vec()).await.unwrap();
+                        } else {
+                            let _: () = redis.del(&key).await.unwrap();
+                            debug!("Session {recv_session} deleted");
                         }
                     }
                     _ => (),

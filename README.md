@@ -9,12 +9,12 @@ Listen Together API is a backend for <a href="https://github.com/HitoIRL/listen-
 - [ License ](#license)
 
 <a name="installation"></a>
-## 1. Installation
-1. Make sure you have Rust and Cargo installed. If not, you can <a href="https://rustup.rs/">install it from official website</a>
-2. Clone repository:
+## Installation
+1. Clone repository:
 ```bash
 git clone https://github.com/HitoIRL/listen-together-api
 ```
+2. Make sure you have Rust and Cargo installed. If not, you can <a href="https://rustup.rs/">install it from official website</a>
 3. Install dependencies and build project:
 ```bash
 cd listen-together-api
@@ -24,19 +24,20 @@ cargo build
 ```bash
 docker run --rm -p 6379:6379 redis
 ```
-5. Configure environment variables. Rename `.env.example` to `.env` and fill it with your data.
-6. Start the server:
+5. Create YouTube API key. You can <a href="https://developers.google.com/youtube/v3/getting-started">get it from Google Developers Console</a>.
+6. Configure environment variables. Rename `.env.example` to `.env` and fill it with your data.
+7. Start the server:
 ```bash
 cargo run
 ```
 The API should now be accessible at `http://127.0.0.1:3000`.
 
 <a name="usage"></a>
-## 2. Usage
-### 2.1. Session Endpoints
+## Usage
+### Session Endpoints
 `POST /session`: Creates a new session and returns it's id.<br>
 `WS /session/{id}`: Connects with session websocket.
 
 <a name="license"></a>
-## 3. License
+## License
 Listen Together API is licensed under the GNU AGPLv3 license. See the [LICENSE](LICENSE) file for more information.

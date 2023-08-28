@@ -7,7 +7,7 @@ use crate::errors::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SongDetails {
-    title: String,
+    pub title: String,
     thumbnail: String,
 }
 

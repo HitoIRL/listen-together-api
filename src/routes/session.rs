@@ -1,13 +1,13 @@
 use futures_util::{StreamExt, SinkExt};
 use log::debug;
-use poem::{IntoEndpoint, Route, web::{Path, Data, websocket::{WebSocket, Message}}, handler, post, get, IntoResponse, EndpointExt};
-use redis::{aio::ConnectionManager, AsyncCommands};
+use poem::{Route, web::{Path, Data, websocket::{WebSocket, Message}}, handler, post, get, IntoResponse, EndpointExt};
+use redis::AsyncCommands;
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use tokio::sync::broadcast::{Sender, channel};
 use uuid::Uuid;
 
-use crate::{errors::Error, youtube};
+use crate::{errors::ApiError, database::Database, youtube};
 
 #[derive(Debug)]
 struct SessionData {
@@ -51,15 +51,13 @@ impl SessionData {
 }
 
 #[handler]
-async fn create_session(redis: Data<&ConnectionManager>) -> String {
-    let mut redis = redis.clone();
-
+async fn create_session(mut redis: Database) -> String {
     let id = Uuid::new_v4().to_string();
     let key = format!("session:{id}");
 
     let data = SessionData::new();
     let data = data.as_vec();
-    let _: () = redis.hset_multiple(key, &data).await.unwrap();
+    let _: () = redis.0.hset_multiple(key, &data).await.unwrap();
 
     json!({ "id": id }).to_string()
 }
@@ -100,24 +98,24 @@ impl Packet {
     }
 }
 
-async fn get_session_data(id: &str, redis: &mut ConnectionManager) -> Result<SessionData, Error> {
+async fn get_session_data(id: &str, redis: &mut Database) -> Result<SessionData, ApiError> {
     let key = format!("session:{id}");
-    let vec: Vec<(String, String)> = redis.hgetall(&key).await.unwrap();
+    let vec: Vec<(String, String)> = redis.0.hgetall(&key).await.unwrap();
     if vec.is_empty() {
-        return Err(Error::InvalidSession);
+        return Err(ApiError::InvalidSession);
     }
     Ok(SessionData::from_vec(vec))
 }
 
-async fn get_songs(id: &str, redis: &mut ConnectionManager) -> Vec<youtube::SongDetails> {
+async fn get_songs(id: &str, redis: &mut Database) -> Vec<youtube::SongDetails> {
     let key = format!("session:{id}");
-    let songs: String = redis.hget(&key, "songs".to_string()).await.unwrap();
+    let songs: String = redis.0.hget(&key, "songs".to_string()).await.unwrap();
     serde_json::from_str(&songs).unwrap()
 }
 
 async fn receive_packet(
     packet: Packet,
-    redis: &mut ConnectionManager,
+    redis: &mut Database,
     sender: &Sender<SinkData>,
     session: &str,
 ) -> bool {
@@ -134,7 +132,7 @@ async fn receive_packet(
 
             songs.push(details);
             let songs_serialized = serde_json::to_string(&songs).unwrap();
-            let _: () = redis.hset(&key, "songs".to_string(), &songs_serialized).await.unwrap();
+            let _: () = redis.0.hset(&key, "songs".to_string(), &songs_serialized).await.unwrap();
 
             let send_packet = Packet {
                 kind: PacketKind::SetSongs,
@@ -153,19 +151,17 @@ async fn receive_packet(
 
 #[handler]
 async fn join_session(
-    redis: Data<&ConnectionManager>,
+    mut redis: Database,
     Path(session): Path<String>,
     ws: WebSocket,
     sender: Data<&Sender<SinkData>>,
-) -> Result<impl IntoResponse, Error> {
-    let mut redis = redis.clone();
-
+) -> Result<impl IntoResponse, ApiError> {
     let key = format!("session:{session}");
 
     // check if session exists
     let mut data = get_session_data(&session, &mut redis).await?;
     data.users += 1;
-    let _: () = redis.hset_multiple(&key, &data.as_vec()).await.unwrap();
+    let _: () = redis.0.hset_multiple(&key, &data.as_vec()).await.unwrap();
 
     // handle websocket
     let sender = sender.clone();
@@ -198,9 +194,9 @@ async fn join_session(
                         debug!("Client disconnected from session {recv_session} | {} users left", data.users);
 
                         if data.users > 0 {
-                            let _: () = redis.hset_multiple(&key, &data.as_vec()).await.unwrap();
+                            let _: () = redis.0.hset_multiple(&key, &data.as_vec()).await.unwrap();
                         } else {
-                            let _: () = redis.del(&key).await.unwrap();
+                            let _: () = redis.0.del(&key).await.unwrap();
                             debug!("Session {recv_session} deleted");
                         }
                     }
@@ -223,7 +219,7 @@ async fn join_session(
     }))
 }
 
-pub fn register_routes() -> impl IntoEndpoint {
+pub fn register_routes() -> Route {
     Route::new()
         .at("/", post(create_session))
         .at("/:id", get(join_session.data(channel::<SinkData>(32).0)))

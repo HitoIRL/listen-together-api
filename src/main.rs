@@ -1,8 +1,9 @@
 mod errors;
 mod routes;
+mod database;
 mod youtube;
 
-use std::env;
+use std::{env, fs};
 
 use chrono::Local;
 use dotenvy::dotenv;
@@ -10,6 +11,7 @@ use fern::colors::{ColoredLevelConfig, Color};
 use log::{error, info};
 use poem::{Route, listener::TcpListener, Server, EndpointExt, middleware::Cors};
 use redis::aio::ConnectionManager;
+use youtube_dl::download_yt_dlp;
 
 use crate::routes::session;
 
@@ -45,6 +47,13 @@ fn setup_logger() -> Result<(), fern::InitError> {
 async fn main() {
     if let Err(why) = setup_logger() {
         eprintln!("Failed to setup logger: {why}");
+    }
+
+    if let Err(_) = fs::metadata("./yt-dlp.exe") {
+        match download_yt_dlp("./").await {
+            Ok(_) => info!("Downloaded yt-dlp"),
+            Err(why) => error!("Failed to download yt-dlp: {why}"),
+        }
     }
 
     dotenv().ok();

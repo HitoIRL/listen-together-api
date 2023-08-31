@@ -4,7 +4,7 @@ use poem::http::StatusCode;
 use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum ApiError {
     #[error("Invalid session ID")]
     InvalidSession,
     #[error("Invalid song URL")]
@@ -13,12 +13,12 @@ pub enum Error {
     SongExists,
 }
 
-impl ResponseError for Error {
+impl ResponseError for ApiError {
     fn status(&self) -> StatusCode {
         match self {
-            Error::InvalidSession => StatusCode::NOT_FOUND,
-            Error::InvalidSong => StatusCode::BAD_REQUEST,
-            Error::SongExists => StatusCode::CONFLICT,
+            ApiError::InvalidSession => StatusCode::NOT_FOUND,
+            ApiError::InvalidSong => StatusCode::BAD_REQUEST,
+            ApiError::SongExists => StatusCode::CONFLICT,
         }
     }
 

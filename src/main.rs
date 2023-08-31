@@ -1,5 +1,5 @@
 mod errors;
-mod routes;
+mod session;
 mod database;
 mod youtube;
 
@@ -12,8 +12,6 @@ use log::{error, info};
 use poem::{Route, listener::TcpListener, Server, EndpointExt, middleware::Cors};
 use redis::aio::ConnectionManager;
 use youtube_dl::download_yt_dlp;
-
-use crate::routes::session;
 
 fn setup_logger() -> Result<(), fern::InitError> {
     let colors = ColoredLevelConfig::new()
@@ -67,7 +65,7 @@ async fn main() {
             info!("Connected to Redis");
 
             let app = Route::new()
-                .nest("/session", session::register_routes())
+                .nest("/session", session::routes::register_routes())
                 .data(con)
                 .with(Cors::new());
 

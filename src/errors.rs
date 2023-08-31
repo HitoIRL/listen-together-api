@@ -2,6 +2,7 @@ use poem::{Body, Response};
 use poem::error::ResponseError;
 use poem::http::StatusCode;
 use serde_json::json;
+use crate::session::models::{Packet, PacketKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -9,8 +10,14 @@ pub enum ApiError {
     InvalidSession,
     #[error("Invalid song URL")]
     InvalidSong,
-    #[error("Song already exists in queue")]
-    SongExists,
+    #[error("Song already in queue")]
+    AlreadyInQueue,
+}
+
+impl ApiError {
+    pub fn as_serialized_packet(&self) -> String {
+        Packet::serialized_str(PacketKind::Error, self.to_string())
+    }
 }
 
 impl ResponseError for ApiError {
@@ -18,7 +25,7 @@ impl ResponseError for ApiError {
         match self {
             ApiError::InvalidSession => StatusCode::NOT_FOUND,
             ApiError::InvalidSong => StatusCode::BAD_REQUEST,
-            ApiError::SongExists => StatusCode::CONFLICT,
+            ApiError::AlreadyInQueue => StatusCode::CONFLICT,
         }
     }
 
